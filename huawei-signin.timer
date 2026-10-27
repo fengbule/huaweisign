@@ -1,0 +1,14 @@
+[Unit]
+Description=Huawei check-in during randomized morning and evening windows
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Asia/Shanghai
+OnCalendar=*-*-* 18:00:00 Asia/Shanghai
+RandomizedDelaySec=2h
+FixedRandomDelay=false
+AccuracySec=1s
+Persistent=true
+Unit=huawei-signin.service
+
+[Install]
+WantedBy=timers.target

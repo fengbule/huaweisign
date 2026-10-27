@@ -1,0 +1,26 @@
+[Unit]
+Description=Huawei Developer Growth daily check-in
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/huawei-signin
+ExecStart=/opt/huawei-signin/venv/bin/python /opt/huawei-signin/signin.py
+ExecStopPost=/opt/huawei-signin/venv/bin/python /opt/huawei-signin/notify.py --service-failure
+UMask=0077
+TimeoutStartSec=10min
+Nice=10
+MemoryHigh=300M
+MemoryMax=400M
+MemorySwapMax=768M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/huawei-signin/state
+Environment=PYTHONUNBUFFERED=1
+Restart=on-failure
+RestartSec=30min
+RestartPreventExitStatus=2

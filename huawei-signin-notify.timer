@@ -1,0 +1,11 @@
+[Unit]
+Description=Retry the Huawei Telegram outbox periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=60s
+Unit=huawei-signin-notify.service
+
+[Install]
+WantedBy=timers.target
