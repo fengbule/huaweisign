@@ -1,0 +1,21 @@
+# Runtime secrets and sessions must never be committed.
+credentials.json
+telegram.json
+bot.txt
+*.env
+.env*
+*session*.json
+*request*.json
+known_hosts
+state/
+state-local/
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.log
+*.png
+*.html
+*.tmp
+.deployment/
+browser-bridge/config.json
