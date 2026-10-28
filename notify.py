@@ -63,7 +63,13 @@ def render(data):
     elif result == 'points_increased':
         message = f"💰 华为云积分 +{data['points_added']}\n当前 {points} 分｜今日已签到"
     elif result == 'needs_verification':
-        message = '⚠️ 华为云登录失效\n自动恢复未完成，需要更新登录态'
+        detail = data.get('detail', '')
+        if 'CAPTCHA' in detail:
+            message = '⚠️ 华为云登录失效\n重新登录被安全验证拦住，今日签到未确认'
+        elif 'SMS' in detail:
+            message = '⚠️ 华为云登录失效\n重新登录需要短信验证，今日签到未确认'
+        else:
+            message = '⚠️ 华为云登录失效\n自动恢复未完成，需要更新登录态'
     elif result == 'login_recovered':
         message = '✅ 华为云登录已自动恢复'
     elif result == 'signed_points_pending':

@@ -119,6 +119,35 @@ class NotificationTests(unittest.TestCase):
         self.assertNotIn('hunter2',text)
         self.assertNotIn('private',text)
 
+    def test_new_session_cookies_take_precedence_over_old_request_capture(self):
+        (self.state/'session.json').write_text(json.dumps({'cookies':[
+            {'name':'SessionID','value':'new','domain':'.huaweicloud.com','path':'/'}]}))
+        (self.state/'request.json').write_text(json.dumps({'headers':{
+            'cookie':'SessionID=old; extra=bootstrap','user-agent':'browser-ua'}}))
+        session=signin.make_session()
+        self.assertEqual(session.cookies.get('SessionID'),'new')
+        self.assertEqual(session.cookies.get('extra'),'bootstrap')
+        self.assertEqual(session.headers['user-agent'],'browser-ua')
+
+    def test_browser_renewal_discards_captured_cookies_and_csrf(self):
+        captured={'headers':{'cookie':'SessionID=old','csrf':'old-csrf','user-agent':'browser-ua'}}
+        (self.state/'request.json').write_text(json.dumps(captured))
+        saved={'cookies':[{'name':'SessionID','value':'fresh'}],'origins':[]}
+        signin.save_browser_session(Mock(storage_state=Mock(return_value=saved)))
+        self.assertEqual(json.loads((self.state/'session.json').read_text()),saved)
+        self.assertEqual(json.loads((self.state/'request.json').read_text())['headers'],
+                         {'user-agent':'browser-ua'})
+
+    def test_challenge_inside_iframe_is_reported_without_solving_it(self):
+        main=Mock()
+        main.locator.return_value.inner_text.return_value='密码登录'
+        challenge=Mock()
+        challenge.locator.return_value.inner_text.return_value='请完成安全验证 向右拖动滑块'
+        self.assertTrue(signin.security_challenge(Mock(frames=[main,challenge])))
+        text=notify.render({**self.event,'result':'needs_verification',
+                            'detail':'CAPTCHA security verification required'})
+        self.assertIn('安全验证',text)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -69,14 +69,17 @@ def make_session():
                             'Content-Type':'application/json;charset=UTF-8'})
     if not (STATE/'session.json').exists():
         raise LoginRequired('No saved login')
-    for cookie in json.loads((STATE/'session.json').read_text())['cookies']:
+    saved = json.loads((STATE/'session.json').read_text())['cookies']
+    for cookie in saved:
         session.cookies.set(cookie['name'], cookie['value'], domain=cookie['domain'], path=cookie['path'])
     if (STATE/'request.json').exists():
         captured=json.loads((STATE/'request.json').read_text())
         parsed=SimpleCookie()
         parsed.load(captured.get('headers',{}).get('cookie',''))
+        saved_names = {cookie['name'] for cookie in saved}
         for name,morsel in parsed.items():
-            session.cookies.set(name,morsel.value,domain='.huaweicloud.com',path='/')
+            if name not in saved_names:
+                session.cookies.set(name,morsel.value,domain='.huaweicloud.com',path='/')
         for name,value in captured.get('headers',{}).items():
             if name != 'cookie' and name != 'csrf':
                 session.headers[name]=value
@@ -113,6 +116,28 @@ def save_session(session):
         captured['headers']['cookie']=prepared.headers.get('Cookie','')
         captured['headers'].pop('csrf',None)
         atomic_json(STATE/'request.json',captured)
+
+def save_browser_session(context):
+    """Browser renewal replaces the old session, including captured Cookie values."""
+    atomic_json(STATE/'session.json', context.storage_state())
+    captured_path = STATE/'request.json'
+    if captured_path.exists():
+        captured = json.loads(captured_path.read_text())
+        captured['headers'] = {name:value for name,value in captured.get('headers',{}).items()
+                               if name.lower() not in ('cookie', 'csrf')}
+        atomic_json(captured_path, captured)
+
+def security_challenge(page):
+    # Challenges may live in a cross-origin iframe, outside the main body text.
+    for frame in page.frames:
+        try:
+            text = frame.locator('body').inner_text(timeout=1500)
+        except Exception:
+            continue
+        if any(term in text for term in ('请完成安全验证', '向右拖动滑块',
+                                         'Drag the slider', 'Complete the security verification')):
+            return True
+    return False
 
 def checkin():
     session = make_session()
@@ -239,13 +264,14 @@ def renew_login(interactive=False):
                             raise LoginRequired('Timed out waiting for SMS verification')
             if urlparse(page.url).hostname != 'developer.huaweicloud.com':
                 page.screenshot(path=str(STATE/'login-failed.png'))
+                if security_challenge(page):
+                    raise LoginRequired('CAPTCHA security verification required')
                 safe_text = page.locator('body').inner_text()
                 LOG.error('Login page signals: verification=%s captcha=%s password_error=%s',
                           '身份验证' in safe_text,'验证码' in safe_text,'密码错误' in safe_text)
                 raise LoginRequired('Login was not completed')
             page.wait_for_timeout(10000)
-            context.storage_state(path=str(STATE/'session.json'))
-            (STATE/'session.json').chmod(0o600)
+            save_browser_session(context)
             page.screenshot(path=str(STATE/'growth.png'))
             LOG.info('Browser login saved')
         except Exception:
