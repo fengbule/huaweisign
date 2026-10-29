@@ -71,7 +71,7 @@ def render(data):
         else:
             message = '⚠️ 华为云登录失效\n自动恢复未完成，需要更新登录态'
     elif result == 'login_recovered':
-        message = '✅ 华为云登录已自动恢复'
+        message = '✅ 华为云会话检查已恢复正常'
     elif result == 'signed_points_pending':
         message = '⚠️ 华为云已签到，积分未到账\n稍后重查，避免重复领取'
     elif result == 'service_failed':
@@ -84,9 +84,11 @@ def render(data):
     elif result == 'failed':
         kind = data.get('error_type', 'Error')
         reason = {'Timeout':'请求超时', 'ConnectTimeout':'连接超时', 'ReadTimeout':'响应超时',
+                  'CsrfUnavailable':'CSRF刷新失败，尚未确认登录失效',
                   'ConnectionError':'网络连接失败', 'SSLError':'TLS 连接失败',
                   'HTTPError':'接口请求失败'}.get(kind)
-        message = '❌ 华为云签到失败\n' + (reason or safe_reason(data.get('detail') or kind))
+        label = '会话检查失败' if data.get('mode') == 'refresh' else '签到失败'
+        message = '❌ 华为云' + label + '\n' + (reason or safe_reason(data.get('detail') or kind))
     else:
         return None
     return f'{message}\n{stamp}'
@@ -176,8 +178,9 @@ def report(data, key=None):
         LOG.error('Notification subsystem error: %s', type(exc).__name__)
 
 
-def service_failure():
-    command = ['systemctl', 'show', 'huawei-signin.service', '--property=Result',
+def service_failure(refresh=False):
+    unit = 'huawei-signin-refresh.service' if refresh else 'huawei-signin.service'
+    command = ['systemctl', 'show', unit, '--property=Result',
                '--property=InvocationID', '--property=ExecMainStatus']
     info = {}
     if not os.environ.get('SERVICE_RESULT') or not os.environ.get('INVOCATION_ID'):
@@ -189,12 +192,13 @@ def service_failure():
     result = os.environ.get('SERVICE_RESULT') or info.get('Result')
     if result in (None, 'success'):
         return
-    current = STATE / 'status.json'
+    current = STATE / ('refresh-status.json' if refresh else 'status.json')
     data = json.loads(current.read_text()) if current.exists() else {}
     invocation = os.environ.get('INVOCATION_ID') or info.get('InvocationID')
     if invocation and data.get('run_id') == invocation and data.get('result') in ERROR_RESULTS:
         # The application already queued the error; cover OOM, signals, and timeouts here.
-        report(data)
+        if not refresh:
+            report(data)
         return
     report({'time': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(),
             'result': 'service_failed', 'service_result': result,
@@ -208,8 +212,11 @@ def main():
     parser.add_argument('--flush', action='store_true')
     parser.add_argument('--service-failure', action='store_true')
     parser.add_argument('--test', action='store_true')
+    parser.add_argument('--refresh-failure', action='store_true')
     args = parser.parse_args()
-    if args.service_failure:
+    if args.refresh_failure:
+        service_failure(refresh=True)
+    elif args.service_failure:
         service_failure()
     elif args.test:
         latest = json.loads((STATE / 'status.json').read_text())

@@ -1,0 +1,11 @@
+[Unit]
+Description=Check Huawei session every 45-60 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=45min
+RandomizedDelaySec=15min
+Unit=huawei-signin-refresh.service
+
+[Install]
+WantedBy=timers.target

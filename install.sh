@@ -27,16 +27,18 @@ for file in signin.py notify.py requirements.txt README.md update.sh; do
     fi
 done
 chmod 700 "$TARGET/update.sh"
-for unit in huawei-signin.service huawei-signin.timer huawei-signin-notify.service huawei-signin-notify.timer; do
+for unit in huawei-signin.service huawei-signin.timer huawei-signin-notify.service huawei-signin-notify.timer huawei-signin-refresh.service huawei-signin-refresh.timer; do
     install -m 644 "$SOURCE/$unit" "/etc/systemd/system/$unit"
 done
 for config in credentials.json telegram.json; do
     if [ -e "$TARGET/$config" ]; then chmod 600 "$TARGET/$config"; fi
 done
 "$TARGET/venv/bin/python" -m py_compile "$TARGET/signin.py" "$TARGET/notify.py"
-systemd-analyze verify /etc/systemd/system/huawei-signin.service /etc/systemd/system/huawei-signin.timer /etc/systemd/system/huawei-signin-notify.service /etc/systemd/system/huawei-signin-notify.timer
+systemd-analyze verify /etc/systemd/system/huawei-signin*.service /etc/systemd/system/huawei-signin*.timer
 systemctl daemon-reload
 systemctl enable huawei-signin.timer huawei-signin-notify.timer
 systemctl restart huawei-signin.timer huawei-signin-notify.timer
+systemctl enable huawei-signin-refresh.timer
+systemctl restart huawei-signin-refresh.timer
 systemctl list-timers huawei-signin.timer huawei-signin-notify.timer --no-pager
 echo 'Installed. Credentials and sessions preserved.'

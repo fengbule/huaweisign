@@ -36,6 +36,9 @@ class LoginRequired(Exception):
 class PointsPendingError(Exception):
     pass
 
+class CsrfUnavailable(Exception):
+    pass
+
 def pause(low=1.4, high=4.5):
     """Small randomized gaps avoid bursts of unnecessary API requests."""
     time.sleep(random.uniform(low, high))
@@ -71,7 +74,11 @@ def make_session():
         raise LoginRequired('No saved login')
     saved = json.loads((STATE/'session.json').read_text())['cookies']
     for cookie in saved:
-        session.cookies.set(cookie['name'], cookie['value'], domain=cookie['domain'], path=cookie['path'])
+        expiry = cookie.get('expires', -1)
+        if expiry > 0 and expiry <= time.time():
+            continue
+        session.cookies.set(cookie['name'], cookie['value'], domain=cookie['domain'], path=cookie['path'],
+                            secure=cookie.get('secure', False), expires=expiry if expiry > 0 else None)
     if (STATE/'request.json').exists():
         captured=json.loads((STATE/'request.json').read_text())
         parsed=SimpleCookie()
@@ -85,11 +92,26 @@ def make_session():
                 session.headers[name]=value
     return session
 
-def api(session, path, method='GET', data=None):
+def refresh_csrf(session):
+    for origin in ['https://developer.huaweicloud.com', BASE]:
+        pause()
+        response = session.get(origin+'/api/get-ainfo', timeout=(15,45), allow_redirects=False)
+        if response.status_code == 200 and response.headers.get('csrf'):
+            session.headers['csrf'] = response.headers['csrf']
+            return
+    # A redirect to /common/404.html does not prove that the user logged out.
+    raise CsrfUnavailable('CSRF endpoint unavailable; login expiry not confirmed')
+
+def api(session, path, method='GET', data=None, retry_csrf=True):
     pause()
     response = session.request(method, BASE+path, json=data, timeout=(15,45))
-    if response.status_code in (401,403):
-        raise LoginRequired('Login or CSRF expired')
+    if response.status_code == 401 or (response.status_code == 403 and response.text.strip().lower() == 'not login'):
+        raise LoginRequired('API session expired')
+    if response.status_code == 403 and 'csrf' in response.text.lower():
+        if not retry_csrf:
+            raise CsrfUnavailable('CSRF rejected after one refresh')
+        refresh_csrf(session)
+        return api(session, path, method, data, retry_csrf=False)
     response.raise_for_status()
     try:
         body = response.json()
@@ -141,16 +163,7 @@ def security_challenge(page):
 
 def checkin():
     session = make_session()
-    token = None
-    for origin in ['https://developer.huaweicloud.com', BASE]:
-        pause()
-        response = session.get(origin+'/api/get-ainfo', timeout=(15,45),allow_redirects=False)
-        if response.status_code == 200 and response.headers.get('csrf'):
-            token = response.headers['csrf']
-            break
-    if not token:
-        raise LoginRequired('No CSRF token')
-    session.headers['csrf'] = token
+    refresh_csrf(session)
     before = api(session, PREFIX+'sign')
     beans_before = api(session, PREFIX+'bonus-beans')['beans']
     pending_path = STATE/'pending-sign.json'
@@ -194,7 +207,7 @@ def checkin():
            consecutive_days=after.get('sign_continuity_count'))
     raise PointsPendingError('Signed, but point credit not yet confirmed')
 
-def renew_login(interactive=False):
+def renew_login(interactive=False, allow_password=True):
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
@@ -217,6 +230,13 @@ def renew_login(interactive=False):
                 page.goto('https://auth.huaweicloud.com/authui/login?locale=zh-cn&service=https%3A%2F%2Fdeveloper.huaweicloud.com%2Fgrow',wait_until='domcontentloaded',timeout=120000)
                 page.wait_for_timeout(10000)
                 if urlparse(page.url).hostname == 'auth.huaweicloud.com':
+                    if not allow_password:
+                        raise LoginRequired('Existing browser SSO session expired')
+                    attempt_path = STATE/'login-attempt.json'
+                    attempt = json.loads(attempt_path.read_text()) if attempt_path.exists() else {}
+                    if not interactive and time.time()-attempt.get('time', 0) < 86400:
+                        raise LoginRequired('Password recovery is paused for 24 hours after the last attempt')
+                    atomic_json(attempt_path, {'time':time.time()})
                     LOG.info('Submitting account password')
                     config = json.loads((ROOT/'credentials.json').read_text())
                     page.get_by_text(re.compile(r'^(密码登录|Password Login)$',re.I)).click()
@@ -284,14 +304,45 @@ def renew_login(interactive=False):
         finally:
             context.close()
 
+def maintain_session():
+    """Read-only experiment: save renewed cookies without signing or password login."""
+    path = STATE/'refresh-status.json'
+    previous = json.loads(path.read_text()) if path.exists() else {}
+    event = {'time':datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(), 'run_id':RUN_ID, 'mode':'refresh'}
+    try:
+        session = make_session()
+        refresh_csrf(session)
+        points = api(session, PREFIX+'bonus-beans')['beans']
+        save_session(session)
+        event.update(result='session_refreshed', points=points)
+        if previous.get('result') in ('needs_verification', 'failed'):
+            notify.report({**event, 'result':'login_recovered'})
+        code = 0
+    except LoginRequired as error:
+        event.update(result='needs_verification', detail=str(error))
+        code = 2
+    except Exception as error:
+        event.update(result='failed', error_type=type(error).__name__,
+                     detail=str(error).split('?')[0][:180])
+        code = 1
+    atomic_json(path, event)
+    LOG.info('%s', json.dumps(event, ensure_ascii=False))
+    if code and (previous.get('result'), previous.get('error_type'), previous.get('detail')) != (
+            event.get('result'), event.get('error_type'), event.get('detail')):
+        notify.report(event)
+    return code
+
 def main():
     os.umask(0o077)
     STATE.mkdir(mode=0o700, exist_ok=True)
     parser = argparse.ArgumentParser()
     parser.add_argument('--bootstrap', action='store_true')
+    parser.add_argument('--refresh', action='store_true')
     args = parser.parse_args()
     with (STATE/'run.lock').open('w') as lock:
         try:
+            if args.refresh:
+                sys.exit(maintain_session())
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             LOG.info('Another run is active; skipping')
@@ -301,11 +352,11 @@ def main():
                 renew_login(interactive=True)
             try:
                 checkin()
-            except LoginRequired:
+            except (LoginRequired, CsrfUnavailable) as error:
                 if args.bootstrap:
                     raise
                 LOG.info('Refreshing browser login')
-                renew_login()
+                renew_login(allow_password=isinstance(error, LoginRequired))
                 checkin()
                 notify.report({'time':datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(),
                                'result':'login_recovered','run_id':RUN_ID})
