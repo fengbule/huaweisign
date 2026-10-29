@@ -65,9 +65,9 @@ def render(data):
     elif result == 'needs_verification':
         detail = data.get('detail', '')
         if 'CAPTCHA' in detail:
-            message = '⚠️ 华为云登录失效\n重新登录被安全验证拦住，今日签到未确认'
+            message = '⚠️ 华为云登录失效\n重新登录被安全验证拦住'
         elif 'SMS' in detail:
-            message = '⚠️ 华为云登录失效\n重新登录需要短信验证，今日签到未确认'
+            message = '⚠️ 华为云登录失效\n重新登录需要短信验证'
         else:
             message = '⚠️ 华为云登录失效\n自动恢复未完成，需要更新登录态'
     elif result == 'login_recovered':
